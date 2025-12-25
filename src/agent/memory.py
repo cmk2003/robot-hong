@@ -219,8 +219,10 @@ class MemoryManager:
         events = self.get_life_events(limit=10)
         for keyword in keywords[:3]:
             for event in events:
-                if keyword in event.get("title", "") or keyword in event.get("description", ""):
-                    parts.append(f"[历史事件] {event['title']}")
+                title = event.get("title") or ""
+                description = event.get("description") or ""
+                if keyword in title or keyword in description:
+                    parts.append(f"[历史事件] {title}")
                     break
         
         # 去重并限制数量
@@ -387,11 +389,40 @@ class MemoryManager:
     def get_context_for_llm(self) -> str:
         """
         获取格式化的上下文字符串，用于LLM
+        包含用户画像和近期事件
         
         Returns:
             格式化的上下文
         """
-        return self.working_context.format_for_llm()
+        parts = []
+        
+        # 1. 基础上下文（用户名、情感等）
+        base_context = self.working_context.format_for_llm()
+        if base_context:
+            parts.append(base_context)
+        
+        # 2. 用户画像详情
+        user_info = self.working_context.user_info
+        if user_info:
+            info_parts = []
+            if user_info.get('location'):
+                info_parts.append(f"住在{user_info['location']}")
+            if user_info.get('birthday'):
+                info_parts.append(f"生日{user_info['birthday']}")
+            if user_info.get('occupation') and user_info.get('occupation') != '未提及':
+                info_parts.append(f"职业是{user_info['occupation']}")
+            if info_parts:
+                parts.append(f"**用户信息**：{', '.join(info_parts)}")
+        
+        # 3. 近期事件（让模型可以主动关心）
+        recent_events = self.get_life_events(limit=5)
+        if recent_events:
+            event_strs = []
+            for e in recent_events[:3]:  # 最多显示3个
+                event_strs.append(f"{e.get('title', '未知事件')}")
+            parts.append(f"**用户近期经历**：{', '.join(event_strs)}（可以适时关心）")
+        
+        return "\n".join(parts) if parts else ""
     
     def get_messages_for_llm(self) -> List[Dict[str, str]]:
         """
