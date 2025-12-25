@@ -232,9 +232,16 @@ class EmotionalAgent:
         if response.get("tool_calls"):
             # 收集函数执行结果
             tool_results = []
+            # 标记是否有需要返回结果给用户的工具（如时间、天气）
+            has_info_tools = False
+            INFO_TOOLS = {"get_current_datetime", "get_weather"}  # 需要把结果告诉用户的工具
+            
             for tool_call in response["tool_calls"]:
                 func_name = tool_call["function"]["name"]
                 func_args = tool_call["function"]["arguments"]
+                
+                if func_name in INFO_TOOLS:
+                    has_info_tools = True
                 
                 # 执行函数
                 result = self.function_executor.execute(func_name, func_args)
@@ -244,8 +251,8 @@ class EmotionalAgent:
                     "result": result
                 })
             
-            # 如果没有文本回复，需要再次调用 LLM 生成回复
-            if not assistant_content:
+            # 如果没有文本回复，或者有需要返回信息的工具，需要再次调用 LLM 生成回复
+            if not assistant_content or has_info_tools:
                 # 构建包含函数结果的消息
                 follow_up_messages = messages.copy()
                 
