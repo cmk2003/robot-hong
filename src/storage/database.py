@@ -112,10 +112,17 @@ class Database:
                 importance INTEGER DEFAULT 3,
                 emotion_impact TEXT,
                 event_date DATE,
+                embedding TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+        
+        # 尝试添加 embedding 列（如果表已存在但没有该列）
+        try:
+            cursor.execute("ALTER TABLE life_events ADD COLUMN embedding TEXT")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         
         # 工作上下文表
         cursor.execute("""

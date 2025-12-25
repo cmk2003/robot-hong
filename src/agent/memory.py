@@ -10,6 +10,10 @@ from collections import deque
 from .context import WorkingContext
 from ..storage.repository import Repository
 from ..llm.prompts import format_working_context
+from ..utils.embedding import get_embedding_service
+from ..utils.logger import get_logger
+
+logger = get_logger("memory")
 
 
 class MemoryManager:
@@ -215,15 +219,34 @@ class MemoryManager:
                     if msg["content"] not in [m.get("content") for m in self._queue]:
                         parts.append(f"[历史对话] {msg['role']}: {msg['content'][:100]}")
         
-        # 搜索相关事件
+        # 搜索相关事件（使用存储的向量）
         events = self.get_life_events(limit=10)
-        for keyword in keywords[:3]:
-            for event in events:
-                title = event.get("title") or ""
-                description = event.get("description") or ""
-                if keyword in title or keyword in description:
-                    parts.append(f"[历史事件] {title}")
-                    break
+        if events:
+            embedding_service = get_embedding_service()
+            query_vec = embedding_service.get_embedding(user_message)
+            
+            if query_vec:
+                import json
+                similar_events = []
+                
+                for event in events:
+                    title = event.get("title") or ""
+                    embedding_str = event.get("embedding")
+                    
+                    if embedding_str and title:
+                        try:
+                            event_vec = json.loads(embedding_str)
+                            similarity = embedding_service.cosine_similarity(query_vec, event_vec)
+                            if similarity >= 0.4:  # 相似度阈值
+                                similar_events.append((title, similarity))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                
+                # 按相似度排序，取前2个
+                similar_events.sort(key=lambda x: x[1], reverse=True)
+                for event_title, similarity in similar_events[:2]:
+                    parts.append(f"[历史事件] {event_title}")
+                    logger.info(f"[向量匹配] '{event_title}' 相似度: {similarity:.2f}")
         
         # 去重并限制数量
         unique_parts = list(dict.fromkeys(parts))[:5]
@@ -331,8 +354,21 @@ class MemoryManager:
         Returns:
             保存的事件
         """
+        import json
+        
         # 更新工作上下文
         self.working_context.add_recent_event(title)
+        
+        # 计算标题的向量嵌入
+        embedding_str = None
+        try:
+            embedding_service = get_embedding_service()
+            embedding = embedding_service.get_embedding(title)
+            if embedding:
+                embedding_str = json.dumps(embedding)
+                logger.info(f"[事件保存] 已计算向量: {title}")
+        except Exception as e:
+            logger.warning(f"[事件保存] 计算向量失败: {e}")
         
         # 持久化
         return self.repository.save_life_event(
@@ -341,7 +377,8 @@ class MemoryManager:
             title=title,
             description=description,
             importance=importance,
-            emotion_impact=emotion_impact
+            emotion_impact=emotion_impact,
+            embedding=embedding_str
         )
     
     def get_life_events(self, limit: int = 20) -> List[Dict[str, Any]]:

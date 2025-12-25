@@ -284,7 +284,8 @@ class Repository:
         description: str = None,
         importance: int = 3,
         emotion_impact: str = None,
-        event_date: str = None
+        event_date: str = None,
+        embedding: str = None
     ) -> Dict[str, Any]:
         """
         保存生活事件
@@ -297,6 +298,7 @@ class Repository:
             importance: 重要程度 1-5
             emotion_impact: 情感影响
             event_date: 事件日期
+            embedding: 标题的向量嵌入（JSON字符串）
         
         Returns:
             保存的事件
@@ -305,9 +307,9 @@ class Repository:
         
         self.db.execute(
             """INSERT INTO life_events 
-            (id, user_id, event_type, title, description, importance, emotion_impact, event_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (event_id, user_id, event_type, title, description, importance, emotion_impact, event_date)
+            (id, user_id, event_type, title, description, importance, emotion_impact, event_date, embedding)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event_id, user_id, event_type, title, description, importance, emotion_impact, event_date, embedding)
         )
         
         return self.db.query_one("SELECT * FROM life_events WHERE id = ?", (event_id,))
