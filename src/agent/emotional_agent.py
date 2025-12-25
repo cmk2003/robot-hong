@@ -223,8 +223,6 @@ class EmotionalAgent:
             called_functions = [tc["function"]["name"] for tc in response["tool_calls"]]
             # 从content中移除函数调用文本（如 "get_current_datetime()" ）
             for func_name in called_functions:
-                # 移除各种形式的函数调用文本
-                import re
                 # 匹配 函数名() 或 函数名(参数) 的模式
                 pattern = rf'{func_name}\([^)]*\)'
                 assistant_content = re.sub(pattern, '', assistant_content)
