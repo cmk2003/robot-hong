@@ -14,6 +14,10 @@ from ..llm.client import LLMClient
 from ..llm.prompts import SYSTEM_PROMPT
 from ..llm.functions import TOOL_DEFINITIONS
 from ..tools.realtime import get_current_datetime, get_weather
+from ..utils.logger import get_logger
+
+# 初始化日志
+logger = get_logger("emotional_agent")
 
 
 class FunctionExecutor:
@@ -92,10 +96,12 @@ class FunctionExecutor:
     
     def _update_user_profile(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """更新用户画像"""
+        logger.info(f"[用户画像更新] field={args['field']}, value={args['value']}")
         self.memory.update_user_profile(
             field=args["field"],
             value=args["value"]
         )
+        logger.info(f"[用户画像更新] 保存成功!")
         return {"success": True, "message": "用户画像已更新"}
     
     def _search_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -175,6 +181,10 @@ class EmotionalAgent:
         Returns:
             响应结果 {"content": str, "emotion": dict, ...}
         """
+        logger.info("=" * 50)
+        logger.info(f"[用户消息] {user_message}")
+        logger.info(f"[当前用户画像] user_name={self.memory.working_context.user_name}, user_info={self.memory.working_context.user_info}")
+        
         # 1. 分析用户情感
         emotion_result = self.emotion_analyzer.analyze(user_message)
         if emotion_result:
@@ -216,11 +226,16 @@ class EmotionalAgent:
         # 7. 处理工具调用
         assistant_content = response.get("content") or ""
         
+        # 日志：记录 LLM 响应
+        logger.info(f"[LLM响应] content: {assistant_content[:100] if assistant_content else 'None'}...")
+        logger.info(f"[LLM响应] tool_calls: {response.get('tool_calls')}")
+        
         # 如果有工具调用，清理content中可能混入的函数调用文本
         # 某些LLM（如千问、DeepSeek）会在content中也写入函数名
         if response.get("tool_calls"):
             # 收集所有被调用的函数名
             called_functions = [tc["function"]["name"] for tc in response["tool_calls"]]
+            logger.info(f"[工具调用] 检测到工具调用: {called_functions}")
             # 从content中移除函数调用文本（如 "get_current_datetime()" ）
             for func_name in called_functions:
                 # 匹配 函数名() 或 函数名(参数) 的模式
@@ -228,6 +243,8 @@ class EmotionalAgent:
                 assistant_content = re.sub(pattern, '', assistant_content)
             # 清理多余的空白
             assistant_content = assistant_content.strip()
+        else:
+            logger.info("[工具调用] 没有检测到工具调用")
         
         if response.get("tool_calls"):
             # 收集函数执行结果
@@ -240,11 +257,15 @@ class EmotionalAgent:
                 func_name = tool_call["function"]["name"]
                 func_args = tool_call["function"]["arguments"]
                 
+                logger.info(f"[工具执行] 执行函数: {func_name}, 参数: {func_args}")
+                
                 if func_name in INFO_TOOLS:
                     has_info_tools = True
                 
                 # 执行函数
                 result = self.function_executor.execute(func_name, func_args)
+                logger.info(f"[工具执行] 函数 {func_name} 执行结果: {result}")
+                
                 tool_results.append({
                     "tool_call_id": tool_call["id"],
                     "name": func_name,

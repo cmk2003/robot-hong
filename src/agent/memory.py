@@ -417,8 +417,8 @@ class MemoryManager:
         """
         if field == "name":
             self.working_context.set_user_info(name=value)
-        elif field in ["age", "occupation", "personality", "interests", 
-                       "communication_style", "sensitive_topics"]:
+        elif field in ["age", "birthday", "location", "occupation", "personality", 
+                       "interests", "communication_style", "sensitive_topics"]:
             self.working_context.user_info[field] = value
         
         # 保存到 users 表

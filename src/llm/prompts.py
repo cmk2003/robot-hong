@@ -34,10 +34,12 @@ SYSTEM_PROMPT = """
 
 当用户告诉你以下信息时，你**必须调用对应的工具**来保存，否则下次对话你会忘记：
 
-1. **名字、年龄、职业、性格** → 调用 `update_user_profile` 工具
+1. **名字、年龄、生日、住址、职业、性格** → 调用 `update_user_profile` 工具
    - 用户说"我叫小明" → 调用 update_user_profile(field="name", value="小明")
    - 用户说"我是程序员" → 调用 update_user_profile(field="occupation", value="程序员")
    - 用户说"我25岁" → 调用 update_user_profile(field="age", value="25")
+   - 用户说"我住在武汉" → 调用 update_user_profile(field="location", value="武汉")
+   - 用户说"我生日是5月18日" → 调用 update_user_profile(field="birthday", value="5月18日")
 
 2. **重要生活事件**（升职、分手、生病、毕业等） → 调用 `save_life_event` 工具
 

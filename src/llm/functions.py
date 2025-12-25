@@ -71,14 +71,14 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "update_user_profile",
-            "description": "更新用户画像信息。当了解到用户的基本信息、偏好或性格特点时调用。",
+            "description": "更新用户画像信息。当用户告诉你任何个人信息时必须调用此函数保存。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "field": {
                         "type": "string",
-                        "enum": ["name", "age", "occupation", "personality", "interests", "communication_style", "sensitive_topics"],
-                        "description": "要更新的字段"
+                        "enum": ["name", "age", "birthday", "location", "occupation", "personality", "interests", "communication_style", "sensitive_topics"],
+                        "description": "要更新的字段：name(名字), age(年龄), birthday(生日), location(住址/城市), occupation(职业), personality(性格), interests(兴趣爱好), communication_style(沟通风格), sensitive_topics(敏感话题)"
                     },
                     "value": {
                         "type": "string",
