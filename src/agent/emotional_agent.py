@@ -1,10 +1,10 @@
 """
 情感Agent模块
-核心Agent类，基于 LangGraph 重构
+核心Agent类，支持单 Agent 和多 Agent 两种模式
 支持最后一轮对话的流式输出
 """
 
-from typing import Dict, Any, List, Generator
+from typing import Dict, Any, List, Generator, Literal, Optional
 
 from .memory import MemoryManager
 from .graph import create_agent_graph
@@ -20,10 +20,16 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 logger = get_logger("emotional_agent")
 
 
+# Agent 模式类型
+AgentMode = Literal["single", "multi"]
+
+
 class EmotionalAgent:
     """
     情感陪伴Agent
-    基于 LangGraph 架构，具备长期记忆能力
+    支持两种模式：
+    - single: 单 Agent 模式（默认），使用 LangGraph 单节点架构
+    - multi: 多 Agent 模式，使用情感分析、记忆检索、回复生成、记忆保存、质量评审 5 个 Agent
     """
     
     def __init__(
@@ -32,7 +38,9 @@ class EmotionalAgent:
         user_id: str,
         llm_client: LLMClient = None,
         llm_config: LLMProviderConfig = None,
-        system_prompt: str = None
+        system_prompt: str = None,
+        mode: AgentMode = "single",
+        agent_llm_clients: Dict[str, LLMClient] = None
     ):
         """
         初始化Agent
@@ -40,22 +48,33 @@ class EmotionalAgent:
         Args:
             db_path: 数据库路径
             user_id: 用户ID
-            llm_client: LLM客户端（旧接口兼容）
+            llm_client: LLM客户端（默认，旧接口兼容）
             llm_config: LLM 配置（用于创建 LangChain ChatModel）
             system_prompt: 系统提示词
+            mode: Agent 模式，"single" 或 "multi"
+            agent_llm_clients: 各 Agent 的 LLM 客户端（多 Agent 模式）
+                {
+                    "emotion": LLMClient,   # 情感分析
+                    "memory": LLMClient,    # 记忆检索
+                    "response": LLMClient,  # 回复生成
+                    "save": LLMClient,      # 记忆保存
+                    "review": LLMClient,    # 质量评审
+                }
         """
         self.db_path = db_path
         self.user_id = user_id
         self.system_prompt = system_prompt or SYSTEM_PROMPT
+        self.mode = mode
+        self.agent_llm_clients = agent_llm_clients or {}
         
         # 初始化模块
         self.memory = MemoryManager(db_path, user_id)
         
-        # 保存 llm_client 用于情感分析
+        # 保存 llm_client 用于情感分析和多 Agent 模式
         self.llm_client = llm_client
         self.emotion_analyzer = EmotionAnalyzer(llm_client) if llm_client else None
         
-        # LangChain ChatModel
+        # LangChain ChatModel（单 Agent 模式使用）
         if llm_config:
             self._llm = create_langchain_chat_model(llm_config)
         elif llm_client:
@@ -73,20 +92,35 @@ class EmotionalAgent:
         
         # LangGraph（延迟初始化）
         self._graph = None
+        
+        # 多 Agent 运行器（延迟初始化）
+        self._multi_agent_runner = None
+        
+        logger.info(f"[EmotionalAgent] 创建实例，模式: {mode}")
     
     def init(self) -> None:
         """初始化Agent"""
         self.memory.init()
         
-        # 创建 LangGraph
-        self._graph = create_agent_graph(
-            llm=self._llm,
-            memory=self.memory,
-            emotion_analyzer=self.emotion_analyzer,
-            system_prompt=self.system_prompt
-        )
-        
-        logger.info("[EmotionalAgent] 初始化完成，使用 LangGraph 架构")
+        if self.mode == "multi":
+            # 多 Agent 模式
+            from .multi_agent_graph import MultiAgentRunner
+            self._multi_agent_runner = MultiAgentRunner(
+                llm_client=self.llm_client,
+                memory=self.memory,
+                max_rewrites=2,
+                agent_llm_clients=self.agent_llm_clients
+            )
+            logger.info("[EmotionalAgent] 初始化完成，使用多 Agent 架构")
+        else:
+            # 单 Agent 模式
+            self._graph = create_agent_graph(
+                llm=self._llm,
+                memory=self.memory,
+                emotion_analyzer=self.emotion_analyzer,
+                system_prompt=self.system_prompt
+            )
+            logger.info("[EmotionalAgent] 初始化完成，使用单 Agent 架构")
     
     def close(self) -> None:
         """关闭Agent"""
@@ -105,24 +139,33 @@ class EmotionalAgent:
         logger.info("=" * 50)
         logger.info(f"[用户消息] {user_message}")
         
-        # 调用 LangGraph
-        result = self._graph.invoke({
-            "user_input": user_message,
-            "messages": [],
-            "emotion_result": None,
-            "working_context": "",
-            "relevant_context": "",
-            "final_response": ""
-        })
-        
-        # 提取工具调用信息
-        tool_calls = self._extract_tool_calls(result["messages"])
-        
-        return {
-            "content": result["final_response"],
-            "emotion": result.get("emotion_result"),
-            "tool_calls": tool_calls
-        }
+        if self.mode == "multi":
+            # 多 Agent 模式
+            result = self._multi_agent_runner.chat(user_message)
+            return {
+                "content": result.get("content", ""),
+                "emotion": result.get("emotion"),
+                "tool_calls": None
+            }
+        else:
+            # 单 Agent 模式
+            result = self._graph.invoke({
+                "user_input": user_message,
+                "messages": [],
+                "emotion_result": None,
+                "working_context": "",
+                "relevant_context": "",
+                "final_response": ""
+            })
+            
+            # 提取工具调用信息
+            tool_calls = self._extract_tool_calls(result["messages"])
+            
+            return {
+                "content": result["final_response"],
+                "emotion": result.get("emotion_result"),
+                "tool_calls": tool_calls
+            }
     
     def chat_stream(self, user_message: str) -> Generator[str, None, None]:
         """
@@ -277,6 +320,14 @@ class EmotionalAgent:
         """
         logger.info("=" * 50)
         logger.info(f"[用户消息-流式] {user_message}")
+        
+        # 多 Agent 模式：使用 MultiAgentRunner 的流式方法
+        if self.mode == "multi":
+            for chunk in self._multi_agent_runner.chat_stream(user_message):
+                yield chunk
+            return
+        
+        # ========== 以下是单 Agent 模式 ==========
         
         # 1. 预处理：情感分析 + 搜索历史
         emotion_result = None

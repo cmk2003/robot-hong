@@ -41,18 +41,44 @@ def get_agent() -> EmotionalAgent:
             logger.error(f"LLM配置错误: {e}")
             raise
         
-        # 创建LLM客户端
+        # 创建默认 LLM 客户端
         llm_client = LLMClient(llm_config)
+        
+        # 获取 Agent 模式
+        agent_mode = config.agent_mode
+        if agent_mode not in ["single", "multi"]:
+            logger.warning(f"无效的 AGENT_MODE: {agent_mode}，使用默认值 single")
+            agent_mode = "single"
+        
+        # 为多 Agent 模式创建各 Agent 的 LLM 客户端
+        agent_llm_clients = {}
+        if agent_mode == "multi":
+            agent_names = ["emotion", "memory", "response", "save", "review"]
+            for agent_name in agent_names:
+                agent_config = config.get_agent_llm_config(agent_name)
+                # 如果模型不同，创建新的客户端
+                if agent_config.model != llm_config.model:
+                    agent_llm_clients[agent_name] = LLMClient(agent_config)
+                    logger.info(f"  {agent_name} Agent 使用模型: {agent_config.model}")
+                else:
+                    agent_llm_clients[agent_name] = llm_client
+            
+            # 打印多 Agent 模型配置
+            logger.info("多 Agent 模型配置:")
+            for name, client in agent_llm_clients.items():
+                logger.info(f"  {name}: {client.model}")
         
         # 创建Agent
         _agent = EmotionalAgent(
             db_path=config.database_path,
             user_id="default-user",
-            llm_client=llm_client
+            llm_client=llm_client,
+            mode=agent_mode,
+            agent_llm_clients=agent_llm_clients
         )
         _agent.init()
         
-        logger.info(f"情感机器人初始化完成！使用模型: {llm_config.model}")
+        logger.info(f"情感机器人初始化完成！默认模型: {llm_config.model}, 模式: {agent_mode}")
     
     return _agent
 

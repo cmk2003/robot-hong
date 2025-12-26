@@ -1,11 +1,12 @@
 """
 配置管理模块
 支持从环境变量读取配置，区分开发/生产环境
+支持多 Agent 模式下每个 Agent 独立配置模型
 """
 
 import os
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional, Dict
 from pathlib import Path
 
 # 尝试加载 .env 文件
@@ -25,6 +26,85 @@ class LLMProviderConfig:
 
 
 @dataclass
+class MultiAgentConfig:
+    """
+    多 Agent 模型配置
+    
+    每个 Agent 可以独立配置模型，如果不配置则使用默认模型
+    
+    环境变量示例：
+    - AGENT_EMOTION_MODEL=qwen-turbo  # 情感分析用小模型
+    - AGENT_MEMORY_MODEL=qwen-turbo   # 记忆检索用小模型
+    - AGENT_RESPONSE_MODEL=qwen-max   # 回复生成用大模型
+    - AGENT_SAVE_MODEL=qwen-turbo     # 记忆保存用小模型
+    - AGENT_REVIEW_MODEL=qwen-plus    # 质量评审用中等模型
+    """
+    # 默认模型（所有 Agent 的 fallback）
+    default_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_DEFAULT_MODEL", "")
+    )
+    
+    # 各 Agent 的模型配置（为空则使用默认模型）
+    emotion_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_EMOTION_MODEL", "")
+    )
+    memory_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_MEMORY_MODEL", "")
+    )
+    response_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_RESPONSE_MODEL", "")
+    )
+    save_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_SAVE_MODEL", "")
+    )
+    review_model: str = field(
+        default_factory=lambda: os.getenv("AGENT_REVIEW_MODEL", "")
+    )
+    
+    def get_model_for_agent(self, agent_name: str, fallback_model: str) -> str:
+        """
+        获取指定 Agent 的模型
+        
+        Args:
+            agent_name: Agent 名称 (emotion, memory, response, save, review)
+            fallback_model: 回退模型（如果没有配置）
+        
+        Returns:
+            模型名称
+        """
+        model_map = {
+            "emotion": self.emotion_model,
+            "memory": self.memory_model,
+            "response": self.response_model,
+            "save": self.save_model,
+            "review": self.review_model,
+        }
+        
+        # 优先使用 Agent 专属模型
+        model = model_map.get(agent_name, "")
+        if model:
+            return model
+        
+        # 其次使用默认模型
+        if self.default_model:
+            return self.default_model
+        
+        # 最后使用 fallback
+        return fallback_model
+    
+    def to_dict(self) -> Dict[str, str]:
+        """转换为字典"""
+        return {
+            "default": self.default_model or "(使用主配置)",
+            "emotion": self.emotion_model or "(使用默认)",
+            "memory": self.memory_model or "(使用默认)",
+            "response": self.response_model or "(使用默认)",
+            "save": self.save_model or "(使用默认)",
+            "review": self.review_model or "(使用默认)",
+        }
+
+
+@dataclass
 class Config:
     """应用配置"""
     
@@ -36,6 +116,16 @@ class Config:
     # LLM提供商
     llm_provider: Literal["qwen", "deepseek"] = field(
         default_factory=lambda: os.getenv("LLM_PROVIDER", "qwen")
+    )
+    
+    # Agent 模式
+    agent_mode: Literal["single", "multi"] = field(
+        default_factory=lambda: os.getenv("AGENT_MODE", "single")
+    )
+    
+    # 多 Agent 模型配置
+    multi_agent_config: MultiAgentConfig = field(
+        default_factory=MultiAgentConfig
     )
     
     # 数据库路径
@@ -97,6 +187,40 @@ class Config:
             model=provider_info["model"],
             api_key=api_key
         )
+    
+    def get_agent_llm_config(self, agent_name: str) -> LLMProviderConfig:
+        """
+        获取指定 Agent 的 LLM 配置
+        
+        Args:
+            agent_name: Agent 名称 (emotion, memory, response, save, review)
+        
+        Returns:
+            LLMProviderConfig 实例
+        """
+        base_config = self.get_llm_config()
+        
+        # 获取该 Agent 的模型（可能与默认不同）
+        model = self.multi_agent_config.get_model_for_agent(
+            agent_name, 
+            base_config.model
+        )
+        
+        return LLMProviderConfig(
+            base_url=base_config.base_url,
+            model=model,
+            api_key=base_config.api_key
+        )
+    
+    def get_all_agent_configs(self) -> Dict[str, LLMProviderConfig]:
+        """
+        获取所有 Agent 的 LLM 配置
+        
+        Returns:
+            字典 {agent_name: LLMProviderConfig}
+        """
+        agent_names = ["emotion", "memory", "response", "save", "review"]
+        return {name: self.get_agent_llm_config(name) for name in agent_names}
     
     def ensure_data_dir(self) -> None:
         """确保数据目录存在"""

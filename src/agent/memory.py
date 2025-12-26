@@ -475,6 +475,39 @@ class MemoryManager:
     
     # ============ 用户画像 ============
     
+    def get_user_profile(self) -> Dict[str, Any]:
+        """
+        获取用户画像
+        优先从内存获取，如果为空则从数据库降级获取
+        
+        Returns:
+            用户画像字典，包含 name, age, occupation 等字段
+        """
+        # 1. 优先从内存中的 working_context 获取
+        profile = self.working_context.user_info.copy()
+        
+        # 2. 如果内存中没有有效数据，从数据库降级获取
+        if not profile or not any(v for v in profile.values() if v):
+            try:
+                user = self.repository.get_user(self.user_id)
+                if user:
+                    # 从 users 表的 profile_data 获取
+                    db_profile = user.get("profile_data", {})
+                    if isinstance(db_profile, dict):
+                        profile.update(db_profile)
+                    
+                    # 如果有 name 字段，也获取
+                    if user.get("name"):
+                        profile["name"] = user["name"]
+                    
+                    # 同步到内存
+                    if profile:
+                        self.working_context.user_info.update(profile)
+            except Exception as e:
+                self.logger.warning(f"[get_user_profile] 从数据库获取失败: {e}")
+        
+        return profile
+    
     def update_user_profile(self, field: str, value: str) -> None:
         """
         更新用户画像
