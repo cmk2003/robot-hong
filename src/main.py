@@ -380,10 +380,12 @@ def create_ui():
         def respond(message, history, user_state_str):
             """处理消息并更新历史"""
             if not message.strip():
-                return history, ""
+                yield history, ""
+                return
             
-            # 添加用户消息到历史
+            # 添加用户消息到历史，并立即显示
             history = history + [[message, ""]]
+            yield history, ""  # 先显示用户消息
             
             # 流式获取回复
             for response in chat_stream(message, history, user_state_str):
