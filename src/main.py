@@ -89,11 +89,50 @@ def chat(message: str, history: list) -> str:
         return f"抱歉，我遇到了一些问题：{str(e)}"
 
 
-def create_ui():
-    """创建Gradio界面 - 使用简化的ChatInterface"""
+def chat_stream(message: str, history: list):
+    """
+    处理聊天消息（流式输出）
+    工具调用使用非流式，最后一轮对话使用流式输出
+    
+    Args:
+        message: 用户消息
+        history: 对话历史 [[user, bot], ...]
+    
+    Yields:
+        机器人回复片段
+    """
+    if not message.strip():
+        yield ""
+        return
+    
+    try:
+        agent = get_agent()
+        
+        # 使用流式方法（最后一轮对话流式输出）
+        full_response = ""
+        for chunk in agent.chat_stream_final_only(message):
+            full_response += chunk
+            yield full_response
+        
+        # 如果没有内容，返回默认消息
+        if not full_response:
+            yield "好的~"
+    
+    except Exception as e:
+        logger.error(f"对话出错: {e}")
+        yield f"抱歉，我遇到了一些问题：{str(e)}"
+
+
+def create_ui(use_stream: bool = True):
+    """
+    创建Gradio界面 - 使用简化的ChatInterface
+    
+    Args:
+        use_stream: 是否使用流式输出，默认True
+    """
     
     demo = gr.ChatInterface(
-        fn=chat,
+        fn=chat_stream if use_stream else chat,
         title="🌸 小虹 - 情感陪伴机器人",
         description="""
         你好！我是小虹，一个温暖的情感陪伴机器人。

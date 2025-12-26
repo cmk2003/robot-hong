@@ -134,11 +134,11 @@ class LLMClient:
         max_tokens: int = 2000
     ):
         """
-        流式聊天请求
+        流式聊天请求（纯文本，不支持工具调用）
         
         Args:
             messages: 消息列表
-            tools: 工具/函数定义列表
+            tools: 工具/函数定义列表（流式模式下忽略）
             temperature: 温度参数
             max_tokens: 最大token数
         
@@ -150,7 +150,45 @@ class LLMClient:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
+        }
+        
+        # 注意：流式模式不传递 tools，确保只输出文本
+        response = self._client.chat.completions.create(**kwargs)
+        
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    
+    def chat_stream_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2000
+    ):
+        """
+        流式聊天请求，支持工具调用检测
+        
+        Args:
+            messages: 消息列表
+            tools: 工具/函数定义列表
+            temperature: 温度参数
+            max_tokens: 最大token数
+        
+        Yields:
+            dict: {"type": "content", "data": str} 或 {"type": "tool_call", "data": dict}
+        
+        最终会yield: {"type": "done", "has_tool_calls": bool, "tool_calls": list}
+        """
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
         
         if tools:
@@ -159,9 +197,54 @@ class LLMClient:
         
         response = self._client.chat.completions.create(**kwargs)
         
+        # 收集工具调用
+        tool_calls_buffer = {}  # id -> {name, arguments}
+        has_tool_calls = False
+        
         for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            if not chunk.choices:
+                continue
+                
+            delta = chunk.choices[0].delta
+            
+            # 处理文本内容
+            if delta.content:
+                yield {"type": "content", "data": delta.content}
+            
+            # 处理工具调用（流式拼接）
+            if delta.tool_calls:
+                has_tool_calls = True
+                for tc in delta.tool_calls:
+                    tc_id = tc.id or list(tool_calls_buffer.keys())[-1] if tool_calls_buffer else "0"
+                    
+                    if tc.id:  # 新的工具调用
+                        tool_calls_buffer[tc.id] = {
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name if tc.function else "",
+                                "arguments": tc.function.arguments if tc.function else ""
+                            }
+                        }
+                    elif tool_calls_buffer:
+                        # 追加 arguments
+                        last_id = list(tool_calls_buffer.keys())[-1]
+                        if tc.function and tc.function.arguments:
+                            tool_calls_buffer[last_id]["function"]["arguments"] += tc.function.arguments
+        
+        # 解析工具调用的 arguments
+        tool_calls = []
+        for tc_data in tool_calls_buffer.values():
+            try:
+                tc_data["function"]["arguments"] = json.loads(tc_data["function"]["arguments"])
+            except json.JSONDecodeError:
+                pass
+            tool_calls.append(tc_data)
+        
+        yield {
+            "type": "done",
+            "has_tool_calls": has_tool_calls,
+            "tool_calls": tool_calls if tool_calls else None
+        }
 
 
 # ============ LangChain ChatModel 工厂 ============
