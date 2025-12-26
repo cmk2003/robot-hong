@@ -4,6 +4,8 @@
 
 import pytest
 import json
+import time
+import threading
 from unittest.mock import Mock, MagicMock, patch
 
 # 导入测试目标
@@ -243,6 +245,119 @@ class TestIntegration:
         # 这个测试需要更复杂的 mock 设置
         # 实际运行时会测试完整流程
         pass
+
+
+class TestParallelExecution:
+    """并行执行优化测试"""
+    
+    def test_run_parallel_agents_executes_concurrently(self):
+        """测试情感分析和记忆检索并行执行"""
+        from src.agent.multi_agent_graph import run_parallel_agents
+        
+        # 记录执行时间和顺序
+        execution_log = []
+        
+        def slow_emotion_run(user_message, context=None):
+            execution_log.append(("emotion_start", time.time()))
+            time.sleep(0.3)  # 模拟 LLM 调用耗时
+            execution_log.append(("emotion_end", time.time()))
+            return {"emotion_type": "开心", "intensity": 0.8}
+        
+        def slow_memory_run(user_message, emotion_result=None):
+            execution_log.append(("memory_start", time.time()))
+            time.sleep(0.3)  # 模拟 LLM 调用耗时
+            execution_log.append(("memory_end", time.time()))
+            return {"should_search": False, "retrieved_context": ""}
+        
+        mock_emotion_agent = Mock()
+        mock_emotion_agent.run = slow_emotion_run
+        
+        mock_memory_agent = Mock()
+        mock_memory_agent.run = slow_memory_run
+        
+        start_time = time.time()
+        emotion_result, memory_result = run_parallel_agents(
+            mock_emotion_agent,
+            mock_memory_agent,
+            "测试消息"
+        )
+        total_time = time.time() - start_time
+        
+        # 验证结果正确
+        assert emotion_result["emotion_type"] == "开心"
+        assert memory_result["should_search"] == False
+        
+        # 验证并行执行（总时间应该接近 0.3 秒，而不是 0.6 秒）
+        assert total_time < 0.5, f"并行执行总时间应该 < 0.5 秒，实际: {total_time:.2f} 秒"
+        
+        # 验证两个任务确实同时启动（开始时间差应该很小）
+        emotion_start = next(t for name, t in execution_log if name == "emotion_start")
+        memory_start = next(t for name, t in execution_log if name == "memory_start")
+        start_diff = abs(emotion_start - memory_start)
+        assert start_diff < 0.1, f"两个任务启动时间差应该 < 0.1 秒，实际: {start_diff:.2f} 秒"
+    
+    def test_run_parallel_agents_handles_exception(self):
+        """测试并行执行时异常处理"""
+        from src.agent.multi_agent_graph import run_parallel_agents
+        
+        mock_emotion_agent = Mock()
+        mock_emotion_agent.run.return_value = {"emotion_type": "平静", "intensity": 0.5}
+        
+        mock_memory_agent = Mock()
+        mock_memory_agent.run.side_effect = Exception("模拟错误")
+        
+        # 应该抛出异常
+        with pytest.raises(Exception):
+            run_parallel_agents(mock_emotion_agent, mock_memory_agent, "测试")
+
+
+class TestAsyncSaveMemory:
+    """异步保存测试"""
+    
+    def test_async_save_does_not_block(self):
+        """测试异步保存不阻塞主线程"""
+        from src.agent.multi_agent_graph import async_save_memory
+        
+        save_started = threading.Event()
+        save_completed = threading.Event()
+        
+        def slow_save(user_message, ai_response):
+            save_started.set()
+            time.sleep(0.5)  # 模拟慢保存
+            save_completed.set()
+            return {"saved_count": 1}
+        
+        mock_save_agent = Mock()
+        mock_save_agent.run = slow_save
+        
+        start_time = time.time()
+        async_save_memory(mock_save_agent, "用户消息", "AI回复")
+        call_time = time.time() - start_time
+        
+        # 验证调用立即返回（不等待保存完成）
+        assert call_time < 0.1, f"异步保存应该立即返回，实际: {call_time:.2f} 秒"
+        
+        # 等待后台任务开始
+        assert save_started.wait(timeout=1.0), "保存任务应该在后台启动"
+        
+        # 等待后台任务完成
+        assert save_completed.wait(timeout=1.0), "保存任务应该在后台完成"
+    
+    def test_async_save_handles_exception_gracefully(self):
+        """测试异步保存处理异常"""
+        from src.agent.multi_agent_graph import async_save_memory
+        
+        mock_save_agent = Mock()
+        mock_save_agent.run.side_effect = Exception("保存失败")
+        
+        # 不应该抛出异常
+        async_save_memory(mock_save_agent, "用户消息", "AI回复")
+        
+        # 等待后台线程执行
+        time.sleep(0.1)
+        
+        # 验证 run 被调用了
+        mock_save_agent.run.assert_called_once()
 
 
 if __name__ == "__main__":

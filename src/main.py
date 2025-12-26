@@ -7,6 +7,7 @@
 import os
 import sys
 import json
+import time
 from pathlib import Path
 
 # 确保src目录在路径中
@@ -269,6 +270,20 @@ def create_ui():
     .logout-btn {
         float: right;
     }
+    /* 响应时间显示样式 */
+    .response-time {
+        text-align: right;
+        font-size: 12px;
+        color: #888;
+        padding: 4px 8px;
+    }
+    /* 确保聊天框滚动到底部 */
+    #chatbot-container {
+        overflow-y: auto;
+    }
+    #chatbot-container > div {
+        overflow-y: auto;
+    }
     """
     
     with gr.Blocks(
@@ -330,7 +345,14 @@ def create_ui():
                 label="对话",
                 height=500,
                 show_copy_button=True,
-                avatar_images=(None, "https://em-content.zobj.net/source/apple/391/cherry-blossom_1f338.png")
+                avatar_images=(None, "https://em-content.zobj.net/source/apple/391/cherry-blossom_1f338.png"),
+                elem_id="chatbot-container"
+            )
+            
+            # 响应时间显示
+            response_time_display = gr.Markdown(
+                value="",
+                elem_classes="response-time"
             )
             
             with gr.Row():
@@ -378,31 +400,62 @@ def create_ui():
         
         # 发送消息（流式）
         def respond(message, history, user_state_str):
-            """处理消息并更新历史"""
+            """处理消息并更新历史，显示响应时间"""
             if not message.strip():
-                yield history, ""
+                yield history, "", ""
                 return
             
             # 添加用户消息到历史，并立即显示
             history = history + [[message, ""]]
-            yield history, ""  # 先显示用户消息
+            yield history, "", "⏳ 思考中..."  # 先显示用户消息和等待提示
+            
+            # 记录开始时间
+            start_time = time.time()
+            first_token_time = None
             
             # 流式获取回复
             for response in chat_stream(message, history, user_state_str):
+                # 记录首字节时间
+                if first_token_time is None and response:
+                    first_token_time = time.time()
+                    ttft = first_token_time - start_time
+                    time_display = f"⚡ 首字节: {ttft:.1f}s"
+                else:
+                    elapsed = time.time() - start_time
+                    time_display = f"⏱️ 生成中: {elapsed:.1f}s"
+                
                 history[-1][1] = response
-                yield history, ""
+                yield history, "", time_display
+            
+            # 计算总耗时
+            total_time = time.time() - start_time
+            ttft = (first_token_time - start_time) if first_token_time else total_time
+            
+            # 根据耗时设置颜色提示
+            if total_time < 3:
+                speed_emoji = "🚀"
+                speed_text = "极速"
+            elif total_time < 6:
+                speed_emoji = "⚡"
+                speed_text = "正常"
+            else:
+                speed_emoji = "🐢"
+                speed_text = "较慢"
+            
+            final_time_display = f"{speed_emoji} {speed_text} | 首字节: {ttft:.1f}s | 总耗时: {total_time:.1f}s"
+            yield history, "", final_time_display
         
         msg_input.submit(
             fn=respond,
             inputs=[msg_input, chatbot, user_state],
-            outputs=[chatbot, msg_input],
+            outputs=[chatbot, msg_input, response_time_display],
             api_name=False
         )
         
         send_btn.click(
             fn=respond,
             inputs=[msg_input, chatbot, user_state],
-            outputs=[chatbot, msg_input],
+            outputs=[chatbot, msg_input, response_time_display],
             api_name=False
         )
         

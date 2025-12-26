@@ -3,7 +3,9 @@
 基于 LangGraph 的多 Agent 协作架构
 """
 
-from typing import TypedDict, Annotated, Optional, Dict, Any, List, Generator
+import threading
+import concurrent.futures
+from typing import TypedDict, Annotated, Optional, Dict, Any, List, Generator, Tuple
 from langgraph.graph import StateGraph, END
 
 from .agents import (
@@ -15,6 +17,7 @@ from .agents import (
 )
 from .memory import MemoryManager
 from ..utils.logger import get_logger
+from ..tools.realtime import get_current_datetime, get_weather
 
 logger = get_logger("multi_agent")
 
@@ -24,6 +27,154 @@ def _get_model_name(llm_client) -> str:
     if hasattr(llm_client, 'model'):
         return llm_client.model
     return "unknown"
+
+
+def preprocess_tools(user_message: str) -> Optional[str]:
+    """
+    工具预处理：基于关键词检测并直接执行工具
+    
+    不通过 LLM，直接调用工具函数，速度极快（毫秒级）
+    
+    Args:
+        user_message: 用户消息
+    
+    Returns:
+        工具执行结果的格式化文本，如果不需要工具则返回 None
+    """
+    msg = user_message.lower()
+    results = []
+    
+    # 时间相关关键词
+    time_keywords = ["几点", "时间", "几号", "星期", "日期", "现在", "多少号"]
+    needs_time = any(kw in msg for kw in time_keywords)
+    
+    # 天气相关关键词
+    weather_keywords = ["天气", "下雨", "温度", "冷不冷", "热不热", "晴天", "阴天", "刮风"]
+    needs_weather = any(kw in msg for kw in weather_keywords)
+    
+    # 执行工具
+    if needs_time:
+        time_info = get_current_datetime()
+        if time_info.get("success"):
+            results.append(f"当前时间：{time_info.get('formatted', '')}")
+            logger.info(f"[ToolPreprocess] 获取时间: {time_info.get('formatted')}")
+    
+    if needs_weather:
+        # 尝试从消息中提取城市名
+        city = _extract_city(user_message)
+        weather_info = get_weather(city)
+        if weather_info.get("success"):
+            results.append(f"天气信息：{weather_info.get('formatted', '')}")
+            logger.info(f"[ToolPreprocess] 获取天气: {weather_info.get('formatted')}")
+    
+    if results:
+        return "\n".join(results)
+    return None
+
+
+def _extract_city(message: str) -> str:
+    """从消息中提取城市名"""
+    cities = ["深圳", "北京", "上海", "广州", "杭州", "成都", "武汉", "西安", 
+              "南京", "重庆", "苏州", "天津", "长沙", "青岛", "东莞"]
+    for city in cities:
+        if city in message:
+            return city
+    return "深圳"  # 默认深圳
+
+
+def run_parallel_agents(
+    emotion_agent: "EmotionAgent",
+    memory_agent: "MemoryRetrievalAgent",
+    user_message: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    并行执行情感分析和记忆检索
+    
+    Args:
+        emotion_agent: 情感分析 Agent
+        memory_agent: 记忆检索 Agent
+        user_message: 用户消息
+    
+    Returns:
+        (emotion_result, memory_result) 元组
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # 提交两个任务并行执行
+        emotion_future = executor.submit(emotion_agent.run, user_message)
+        memory_future = executor.submit(
+            memory_agent.run,
+            user_message=user_message,
+            emotion_result=None  # 并行时无法获取情感结果，使用 None
+        )
+        
+        # 等待两个任务完成
+        emotion_result = emotion_future.result()
+        memory_result = memory_future.result()
+    
+    logger.info("[Parallel] 情感分析和记忆检索并行执行完成")
+    return emotion_result, memory_result
+
+
+def run_parallel_preprocess(
+    emotion_agent: "EmotionAgent",
+    memory_agent: "MemoryRetrievalAgent",
+    user_message: str
+) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
+    """
+    并行执行情感分析、记忆检索和工具预处理
+    
+    工具预处理是纯本地执行（毫秒级），但为了代码一致性放在这里
+    
+    Args:
+        emotion_agent: 情感分析 Agent
+        memory_agent: 记忆检索 Agent
+        user_message: 用户消息
+    
+    Returns:
+        (emotion_result, memory_result, tool_context) 元组
+    """
+    # 工具预处理（毫秒级，可以先执行）
+    tool_context = preprocess_tools(user_message)
+    
+    # 并行执行情感分析和记忆检索
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        emotion_future = executor.submit(emotion_agent.run, user_message)
+        memory_future = executor.submit(
+            memory_agent.run,
+            user_message=user_message,
+            emotion_result=None
+        )
+        
+        emotion_result = emotion_future.result()
+        memory_result = memory_future.result()
+    
+    logger.info("[ParallelPreprocess] 情感分析、记忆检索、工具预处理完成")
+    return emotion_result, memory_result, tool_context
+
+
+def async_save_memory(
+    save_agent: "MemorySaveAgent",
+    user_message: str,
+    ai_response: str
+) -> None:
+    """
+    异步保存记忆（后台线程执行，不阻塞用户响应）
+    
+    Args:
+        save_agent: 记忆保存 Agent
+        user_message: 用户消息
+        ai_response: AI 回复
+    """
+    def _save():
+        try:
+            save_agent.run(user_message=user_message, ai_response=ai_response)
+            logger.info("[AsyncSave] 记忆保存完成")
+        except Exception as e:
+            logger.error(f"[AsyncSave] 记忆保存失败: {e}")
+    
+    thread = threading.Thread(target=_save, daemon=True)
+    thread.start()
+    logger.info("[AsyncSave] 记忆保存任务已提交到后台")
 
 
 class MultiAgentState(TypedDict):
@@ -369,7 +520,11 @@ class MultiAgentRunner:
     def chat_stream(self, user_message: str) -> Generator[str, None, None]:
         """
         处理用户消息（流式输出）
-        只有回复生成使用流式，其他 Agent 使用非流式
+        
+        优化版本：
+        - 情感分析、记忆检索、工具预处理并行执行
+        - 工具调用不再由 ResponseAgent 处理，而是在预处理阶段完成
+        - 记忆保存异步执行
         
         Args:
             user_message: 用户消息
@@ -380,8 +535,12 @@ class MultiAgentRunner:
         logger.info("=" * 50)
         logger.info(f"[MultiAgent-Stream] 用户消息: {user_message}")
         
-        # 1. 情感分析（非流式）
-        emotion_result = self.emotion_agent.run(user_message)
+        # 1. 并行执行情感分析、记忆检索和工具预处理
+        emotion_result, memory_result, tool_context = run_parallel_preprocess(
+            self.emotion_agent,
+            self.memory_retrieval_agent,
+            user_message
+        )
         
         # 更新情感状态
         if emotion_result.get("emotion_type"):
@@ -390,16 +549,20 @@ class MultiAgentRunner:
                 emotion_result.get("intensity", 0.5)
             )
         
-        # 2. 记忆检索（非流式）
-        memory_result = self.memory_retrieval_agent.run(
-            user_message=user_message,
-            emotion_result=emotion_result
-        )
-        
-        # 合并上下文
+        # 2. 合并上下文（包括工具结果）
         existing_context = self.memory.get_context_for_llm() or ""
         retrieved = memory_result.get("retrieved_context", "")
-        memory_context = f"{existing_context}\n\n{retrieved}" if existing_context and retrieved else (existing_context or retrieved)
+        
+        # 合并所有上下文
+        context_parts = []
+        if existing_context:
+            context_parts.append(existing_context)
+        if retrieved:
+            context_parts.append(retrieved)
+        if tool_context:
+            context_parts.append(f"## 实时信息\n{tool_context}")
+        
+        memory_context = "\n\n".join(context_parts) if context_parts else ""
         
         # 3. 保存用户消息
         self.memory.save_message(
@@ -409,7 +572,7 @@ class MultiAgentRunner:
             emotion_intensity=emotion_result.get("intensity")
         )
         
-        # 4. 回复生成（流式）
+        # 4. 回复生成（流式，直接输出，无需工具调用检查）
         full_response = ""
         for chunk in self.response_agent.run_stream(
             user_message=user_message,
@@ -424,14 +587,8 @@ class MultiAgentRunner:
         # 5. 保存 AI 回复
         self.memory.save_message(role="assistant", content=full_response)
         
-        # 6. 记忆保存（后台，非流式）
-        try:
-            self.save_agent.run(
-                user_message=user_message,
-                ai_response=full_response
-            )
-        except Exception as e:
-            logger.error(f"[MultiAgent-Stream] 记忆保存失败: {e}")
+        # 6. 异步记忆保存（优化：不阻塞用户响应）
+        async_save_memory(self.save_agent, user_message, full_response)
         
         logger.info(f"[MultiAgent-Stream] 完成，回复长度: {len(full_response)}")
 

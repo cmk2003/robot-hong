@@ -100,12 +100,15 @@ class ResponseAgent(BaseAgent):
         chat_history: List[Dict[str, str]] = None
     ) -> Generator[str, None, None]:
         """
-        流式生成回复
+        流式生成回复（简化版：工具调用已在预处理阶段完成）
+        
+        工具调用由 multi_agent_graph 在预处理阶段并行执行，
+        结果通过 memory_context 传入，ResponseAgent 只需专注于生成回复。
         
         Args:
             user_message: 用户消息
             emotion_result: 情感分析结果
-            memory_context: 检索到的记忆上下文
+            memory_context: 上下文（包含工具执行结果）
             user_profile: 用户画像
             chat_history: 对话历史
         
@@ -129,24 +132,7 @@ class ResponseAgent(BaseAgent):
         
         messages.append({"role": "user", "content": user_message})
         
-        # 构建工具 schema
-        tools_schema = self._get_tools_schema()
-        
-        # 先检查是否需要工具调用（非流式）
-        check_response = self.llm.chat(
-            messages=messages,
-            tools=tools_schema,
-            temperature=0.7,
-            max_tokens=500
-        )
-        
-        if check_response.get("tool_calls"):
-            # 有工具调用，先处理工具，再流式输出
-            self._handle_tool_calls_for_stream(
-                messages, check_response["tool_calls"]
-            )
-        
-        # 流式输出最终回复
+        # 直接流式输出（工具调用已在预处理阶段完成）
         for chunk in self.llm.chat_stream(
             messages=messages,
             temperature=0.7,
