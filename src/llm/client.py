@@ -163,3 +163,26 @@ class LLMClient:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
+
+# ============ LangChain ChatModel 工厂 ============
+
+def create_langchain_chat_model(config: LLMProviderConfig):
+    """
+    创建 LangChain ChatModel 实例
+    
+    Args:
+        config: LLM 提供商配置
+    
+    Returns:
+        ChatOpenAI 实例
+    """
+    from langchain_openai import ChatOpenAI
+    
+    return ChatOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        model=config.model,
+        temperature=0.7,
+        max_tokens=2000
+    )
+

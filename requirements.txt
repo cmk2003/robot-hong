@@ -3,6 +3,11 @@ openai>=1.0.0              # LLM客户端（兼容千问/DeepSeek）
 gradio>=4.0.0              # Web界面
 python-dotenv>=1.0.0       # 环境变量管理
 
+# LangChain（新增）
+langchain>=0.3.0           # LangChain 核心
+langchain-openai>=0.2.0    # OpenAI 兼容模型
+langgraph>=0.2.0           # LangGraph 状态图
+
 # 数据库
 # SQLite 内置，无需额外依赖
 
