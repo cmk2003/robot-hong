@@ -198,15 +198,30 @@ class Repository:
         Returns:
             匹配的消息列表
         """
-        # 使用FTS5搜索
-        return self.db.query(
-            """SELECT m.* FROM messages m
-            JOIN messages_fts fts ON m.rowid = fts.rowid
-            WHERE messages_fts MATCH ? AND m.user_id = ?
-            ORDER BY rank
-            LIMIT ?""",
-            (query, user_id, limit)
-        )
+        try:
+            # 清理查询字符串，移除 FTS5 特殊字符
+            clean_query = query.replace('"', '').replace("'", '').replace('*', '').replace('-', ' ')
+            if not clean_query.strip():
+                return []
+            
+            # 使用FTS5搜索
+            return self.db.query(
+                """SELECT m.* FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ? AND m.user_id = ?
+                ORDER BY rank
+                LIMIT ?""",
+                (clean_query, user_id, limit)
+            )
+        except Exception:
+            # FTS5 查询失败时，回退到 LIKE 搜索
+            return self.db.query(
+                """SELECT * FROM messages 
+                WHERE user_id = ? AND content LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?""",
+                (user_id, f"%{query}%", limit)
+            )
     
     # ============ 情感记录操作 ============
     

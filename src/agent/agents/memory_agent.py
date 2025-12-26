@@ -1,12 +1,14 @@
 """
 记忆检索 Agent
 智能决定是否需要检索历史记忆，并执行检索
+支持向量语义搜索
 """
 
 from typing import Dict, Any, List
 
 from .base import BaseAgent
 from ..prompts.memory_prompt import MEMORY_RETRIEVAL_PROMPT
+from ...utils.embedding import get_embedding_service
 
 
 class MemoryRetrievalAgent(BaseAgent):
@@ -84,7 +86,7 @@ class MemoryRetrievalAgent(BaseAgent):
         search_types: List[str]
     ) -> str:
         """
-        执行记忆检索
+        执行记忆检索（使用向量语义搜索 + 关键词搜索）
         
         Args:
             queries: 检索关键词列表
@@ -95,33 +97,106 @@ class MemoryRetrievalAgent(BaseAgent):
         """
         results = []
         
-        for query in queries[:3]:  # 最多3个查询
-            # 检索消息
-            if "messages" in search_types:
-                messages = self.memory.search_messages(query, limit=3)
-                for msg in messages:
-                    results.append(
-                        f"[历史对话] {msg.get('role', 'user')}: {msg.get('content', '')[:100]}"
-                    )
-            
-            # 检索事件
+        # 确保参数有效
+        if not queries:
+            return ""
+        if not search_types:
+            search_types = ["messages"]
+        
+        # 获取向量服务
+        embedding_service = get_embedding_service()
+        
+        # 合并查询词用于向量搜索
+        combined_query = " ".join(queries[:3])
+        
+        try:
+            # 1. 向量搜索事件（优先使用语义搜索）
             if "events" in search_types:
-                events = self.memory.get_life_events(limit=5)
-                for event in events:
-                    if query.lower() in event.get("title", "").lower():
-                        results.append(
-                            f"[生活事件] {event.get('title', '')} - {event.get('description', '')[:50]}"
-                        )
+                events = self.memory.get_life_events(limit=10)
+                if events and embedding_service:
+                    query_vec = embedding_service.get_embedding(combined_query)
+                    if query_vec:
+                        import json
+                        for event in events:
+                            title = event.get("title") or ""
+                            embedding_str = event.get("embedding")
+                            
+                            if embedding_str and title:
+                                try:
+                                    event_vec = json.loads(embedding_str)
+                                    similarity = embedding_service.cosine_similarity(query_vec, event_vec)
+                                    if similarity >= 0.4:  # 相似度阈值
+                                        desc = event.get('description', '')[:50] if event.get('description') else ''
+                                        results.append(
+                                            f"[生活事件] {title} - {desc} (相似度: {similarity:.2f})"
+                                        )
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                    
+                    # 如果向量搜索没结果，回退到关键词匹配
+                    if not any("[生活事件]" in r for r in results):
+                        for event in events:
+                            title = event.get("title", "").lower()
+                            for query in queries:
+                                if query.lower() in title:
+                                    results.append(
+                                        f"[生活事件] {event.get('title', '')} - {event.get('description', '')[:50]}"
+                                    )
+                                    break
             
-            # 检索情感记录
+            # 2. 向量搜索消息
+            if "messages" in search_types:
+                # 先尝试关键词搜索
+                for query in queries[:3]:
+                    if not query:
+                        continue
+                    messages = self.memory.search_messages(query, limit=3)
+                    if messages:
+                        for msg in messages:
+                            if msg:
+                                results.append(
+                                    f"[历史对话] {msg.get('role', 'user')}: {msg.get('content', '')[:100]}"
+                                )
+                
+                # 如果关键词搜索没结果，尝试向量搜索最近消息
+                if not any("[历史对话]" in r for r in results) and embedding_service:
+                    recent_messages = self.memory.get_recent_messages(limit=20)
+                    if recent_messages:
+                        query_vec = embedding_service.get_embedding(combined_query)
+                        if query_vec:
+                            candidates = []
+                            for msg in recent_messages:
+                                content = msg.get("content", "")
+                                if content:
+                                    msg_vec = embedding_service.get_embedding(content[:200])
+                                    if msg_vec:
+                                        similarity = embedding_service.cosine_similarity(query_vec, msg_vec)
+                                        if similarity >= 0.45:
+                                            candidates.append((msg, similarity))
+                            
+                            # 取相似度最高的3条
+                            candidates.sort(key=lambda x: x[1], reverse=True)
+                            for msg, sim in candidates[:3]:
+                                results.append(
+                                    f"[历史对话] {msg.get('role', 'user')}: {msg.get('content', '')[:100]}"
+                                )
+            
+            # 3. 检索情感记录
             if "emotions" in search_types:
                 emotions = self.memory.get_emotion_history(limit=5)
-                for emotion in emotions:
-                    if query.lower() in emotion.get("emotion_type", "").lower():
-                        results.append(
-                            f"[情感记录] {emotion.get('emotion_type', '')} "
-                            f"(强度: {emotion.get('intensity', 0)})"
-                        )
+                if emotions:
+                    for emotion in emotions:
+                        if emotion:
+                            for query in queries:
+                                if query.lower() in emotion.get("emotion_type", "").lower():
+                                    results.append(
+                                        f"[情感记录] {emotion.get('emotion_type', '')} "
+                                        f"(强度: {emotion.get('intensity', 0)})"
+                                    )
+                                    break
+                                    
+        except Exception as e:
+            self.logger.warning(f"[MemoryAgent] 检索失败: {e}")
         
         # 去重并格式化
         unique_results = list(dict.fromkeys(results))
