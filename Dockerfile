@@ -1,5 +1,6 @@
 # ========================================
 # 小虹 - 情感陪伴机器人 Docker 镜像
+# 多用户版本
 # ========================================
 
 FROM python:3.11-slim
@@ -16,6 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ENV=production \
     GRADIO_SERVER_PORT=7860 \
     DATABASE_PATH=/app/data/emotional_bot.db \
+    LOG_PATH=/app/logs \
     LOG_LEVEL=INFO
 
 # 安装系统依赖
@@ -32,8 +34,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制源代码
 COPY src/ ./src/
 
-# 创建数据目录
-RUN mkdir -p /app/data
+# 创建数据目录和日志目录
+RUN mkdir -p /app/data /app/logs
 
 # 暴露端口
 EXPOSE 7860
@@ -44,4 +46,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # 启动命令
 CMD ["python", "src/main.py"]
-

@@ -1,10 +1,12 @@
 """
 情感机器人主入口
-基于Gradio的对话界面
+基于 Gradio 的多用户对话界面
+支持用户名 + 激活码验证
 """
 
 import os
 import sys
+import json
 from pathlib import Path
 
 # 确保src目录在路径中
@@ -13,83 +15,141 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import gradio as gr
 
 from src.config import Config, config
-from src.agent.emotional_agent import EmotionalAgent
-from src.llm.client import LLMClient
+from src.agent.agent_pool import AgentPool, username_to_user_id
 from src.utils.logger import get_logger
 
 # 初始化日志
 logger = get_logger("main")
 
-# 全局Agent实例
-_agent: EmotionalAgent = None
+# 全局 Agent 池
+_agent_pool: AgentPool = None
 
 
-def get_agent() -> EmotionalAgent:
-    """获取或创建Agent实例"""
-    global _agent
+def get_agent_pool() -> AgentPool:
+    """获取或创建 Agent 池"""
+    global _agent_pool
     
-    if _agent is None:
-        logger.info("初始化情感机器人...")
+    if _agent_pool is None:
+        logger.info("初始化 Agent 池...")
         
         # 确保数据目录存在
         config.ensure_data_dir()
         
-        # 获取LLM配置
-        try:
-            llm_config = config.get_llm_config()
-        except ValueError as e:
-            logger.error(f"LLM配置错误: {e}")
-            raise
+        # 创建 Agent 池
+        _agent_pool = AgentPool(config)
         
-        # 创建默认 LLM 客户端
-        llm_client = LLMClient(llm_config)
-        
-        # 获取 Agent 模式
-        agent_mode = config.agent_mode
-        if agent_mode not in ["single", "multi"]:
-            logger.warning(f"无效的 AGENT_MODE: {agent_mode}，使用默认值 single")
-            agent_mode = "single"
-        
-        # 为多 Agent 模式创建各 Agent 的 LLM 客户端
-        agent_llm_clients = {}
-        if agent_mode == "multi":
-            agent_names = ["emotion", "memory", "response", "save", "review"]
-            for agent_name in agent_names:
-                agent_config = config.get_agent_llm_config(agent_name)
-                # 如果模型不同，创建新的客户端
-                if agent_config.model != llm_config.model:
-                    agent_llm_clients[agent_name] = LLMClient(agent_config)
-                    logger.info(f"  {agent_name} Agent 使用模型: {agent_config.model}")
-                else:
-                    agent_llm_clients[agent_name] = llm_client
-            
-            # 打印多 Agent 模型配置
-            logger.info("多 Agent 模型配置:")
-            for name, client in agent_llm_clients.items():
-                logger.info(f"  {name}: {client.model}")
-        
-        # 创建Agent
-        _agent = EmotionalAgent(
-            db_path=config.database_path,
-            user_id="default-user",
-            llm_client=llm_client,
-            mode=agent_mode,
-            agent_llm_clients=agent_llm_clients
-        )
-        _agent.init()
-        
-        logger.info(f"情感机器人初始化完成！默认模型: {llm_config.model}, 模式: {agent_mode}")
+        logger.info(f"Agent 池初始化完成！模式: {config.agent_mode}")
     
-    return _agent
+    return _agent_pool
 
 
-def chat(message: str, history: list) -> str:
+def verify_activation_code(code: str) -> bool:
     """
-    处理聊天消息（使用非流式以支持工具调用）
+    验证激活码
+    
+    Args:
+        code: 用户输入的激活码
+    
+    Returns:
+        是否验证通过
+    """
+    expected_code = config.activation_code
+    
+    # 如果未配置激活码，允许所有访问
+    if not expected_code:
+        logger.warning("未配置激活码，允许所有用户访问")
+        return True
+    
+    return code.strip() == expected_code
+
+
+def parse_user_state(state_str: str) -> dict:
+    """解析用户状态 JSON 字符串"""
+    if not state_str:
+        return {}
+    try:
+        return json.loads(state_str)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def login(username: str, activation_code: str):
+    """
+    用户登录
+    
+    Args:
+        username: 用户名
+        activation_code: 激活码
+    
+    Returns:
+        (user_state, login_visible, chat_visible, error_msg, error_visible, welcome_msg)
+    """
+    # 验证用户名
+    if not username or not username.strip():
+        return (
+            "",             # user_state（空字符串表示未登录）
+            gr.update(visible=True),   # login_page
+            gr.update(visible=False),  # chat_page
+            "❌ 请输入用户名",          # error_msg
+            gr.update(visible=True),   # error_visible
+            ""              # welcome_msg
+        )
+    
+    # 验证激活码
+    if not verify_activation_code(activation_code):
+        logger.warning(f"用户 {username} 激活码验证失败")
+        return (
+            "",
+            gr.update(visible=True),
+            gr.update(visible=False),
+            "❌ 激活码无效，请检查后重试",
+            gr.update(visible=True),
+            ""
+        )
+    
+    # 登录成功
+    username = username.strip()
+    user_id = username_to_user_id(username)
+    
+    logger.info(f"用户登录成功: {username} (user_id: {user_id})")
+    
+    # 获取或创建该用户的 Agent
+    pool = get_agent_pool()
+    agent = pool.get_agent(user_id)
+    
+    # 获取用户名（可能之前保存过）
+    display_name = agent.memory.working_context.user_name or username
+    
+    # 如果是新用户，更新用户名
+    if not agent.memory.working_context.user_name:
+        agent.memory.working_context.set_user_info(name=username)
+        agent.memory.save_working_context()
+    
+    user_state = json.dumps({
+        "user_id": user_id,
+        "username": display_name
+    })
+    
+    welcome_msg = f"### 👋 欢迎回来，{display_name}！"
+    
+    return (
+        user_state,
+        gr.update(visible=False),  # 隐藏登录页
+        gr.update(visible=True),   # 显示对话页
+        "",
+        gr.update(visible=False),
+        welcome_msg
+    )
+
+
+def chat(message: str, history: list, user_state_str: str):
+    """
+    处理聊天消息
     
     Args:
         message: 用户消息
-        history: 对话历史 [[user, bot], ...]
+        history: 对话历史
+        user_state_str: 用户状态 JSON 字符串
     
     Returns:
         机器人回复
@@ -97,14 +157,19 @@ def chat(message: str, history: list) -> str:
     if not message.strip():
         return ""
     
+    user_state = parse_user_state(user_state_str)
+    if not user_state.get("user_id"):
+        return "❌ 请先登录"
+    
     try:
-        agent = get_agent()
+        user_id = user_state.get("user_id")
+        pool = get_agent_pool()
+        agent = pool.get_agent(user_id)
         
-        # 使用非流式方法（支持工具调用：时间、天气等）
+        # 使用非流式方法
         response = agent.chat(message)
         content = response.get("content", "")
         
-        # 如果没有内容，返回默认消息
         if not content:
             return "好的，我记住了~"
         
@@ -115,14 +180,14 @@ def chat(message: str, history: list) -> str:
         return f"抱歉，我遇到了一些问题：{str(e)}"
 
 
-def chat_stream(message: str, history: list):
+def chat_stream(message: str, history: list, user_state_str: str):
     """
-    处理聊天消息（流式输出）
-    工具调用使用非流式，最后一轮对话使用流式输出
+    流式处理聊天消息
     
     Args:
         message: 用户消息
-        history: 对话历史 [[user, bot], ...]
+        history: 对话历史
+        user_state_str: 用户状态 JSON 字符串
     
     Yields:
         机器人回复片段
@@ -131,16 +196,21 @@ def chat_stream(message: str, history: list):
         yield ""
         return
     
+    user_state = parse_user_state(user_state_str)
+    if not user_state.get("user_id"):
+        yield "❌ 请先登录"
+        return
+    
     try:
-        agent = get_agent()
+        user_id = user_state.get("user_id")
+        pool = get_agent_pool()
+        agent = pool.get_agent(user_id)
         
-        # 使用流式方法（最后一轮对话流式输出）
         full_response = ""
         for chunk in agent.chat_stream_final_only(message):
             full_response += chunk
             yield full_response
         
-        # 如果没有内容，返回默认消息
         if not full_response:
             yield "好的~"
     
@@ -149,37 +219,205 @@ def chat_stream(message: str, history: list):
         yield f"抱歉，我遇到了一些问题：{str(e)}"
 
 
-def create_ui(use_stream: bool = True):
+def logout(user_state_str: str):
     """
-    创建Gradio界面 - 使用简化的ChatInterface
+    用户登出
     
     Args:
-        use_stream: 是否使用流式输出，默认True
+        user_state_str: 用户状态 JSON 字符串
+    
+    Returns:
+        (user_state, login_visible, chat_visible, history)
+    """
+    user_state = parse_user_state(user_state_str)
+    if user_state.get("user_id"):
+        username = user_state.get("username", "未知用户")
+        logger.info(f"用户登出: {username}")
+    
+    return (
+        "",             # 清空用户状态（空字符串）
+        gr.update(visible=True),   # 显示登录页
+        gr.update(visible=False),  # 隐藏对话页
+        []              # 清空历史
+    )
+
+
+def create_ui():
+    """创建 Gradio 界面"""
+    
+    # 自定义 CSS
+    custom_css = """
+    .login-container {
+        max-width: 400px;
+        margin: 100px auto;
+        padding: 40px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #fff5f5 0%, #fff0f6 100%);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    }
+    .login-title {
+        text-align: center;
+        color: #e91e63;
+        margin-bottom: 30px;
+    }
+    .chat-header {
+        padding: 16px;
+        background: linear-gradient(135deg, #fce4ec 0%, #f3e5f5 100%);
+        border-radius: 12px;
+        margin-bottom: 16px;
+    }
+    .logout-btn {
+        float: right;
+    }
     """
     
-    demo = gr.ChatInterface(
-        fn=chat_stream if use_stream else chat,
+    with gr.Blocks(
         title="🌸 小虹 - 情感陪伴机器人",
-        description="""
-        你好！我是小虹，一个温暖的情感陪伴机器人。
-        我会记住我们的对话，理解你的情感，陪伴你度过每一天。
-        
-        💡 **提示**: 你可以和我分享任何心情和经历，我会认真倾听和回应。
-        """,
-        examples=[
-            "你好，我今天心情不太好",
-            "最近工作压力很大，感觉很焦虑",
-            "我升职了！想和你分享这个好消息",
-            "有时候感觉很孤独",
-        ],
         theme=gr.themes.Soft(
             primary_hue="pink",
             secondary_hue="purple",
         ),
-        retry_btn="🔄 重试",
-        undo_btn="↩️ 撤销",
-        clear_btn="🗑️ 清空",
-    )
+        css=custom_css,
+        analytics_enabled=False  # 禁用分析，避免 API schema 问题
+    ) as demo:
+        
+        # 用户状态（使用字符串避免复杂类型导致的 schema 问题）
+        user_state = gr.State(value="")
+        
+        # ========== 登录页面 ==========
+        with gr.Column(visible=True, elem_classes="login-container") as login_page:
+            gr.Markdown(
+                "# 🌸 小虹\n### 情感陪伴机器人",
+                elem_classes="login-title"
+            )
+            
+            gr.Markdown(
+                """
+                你好！我是小虹，一个温暖的情感陪伴机器人。
+                我会记住我们的对话，理解你的情感，陪伴你度过每一天。
+                
+                请输入用户名和激活码开始对话 ✨
+                """
+            )
+            
+            username_input = gr.Textbox(
+                label="用户名",
+                placeholder="请输入您的名字",
+                max_lines=1
+            )
+            
+            code_input = gr.Textbox(
+                label="激活码",
+                placeholder="请输入激活码",
+                type="password",
+                max_lines=1
+            )
+            
+            login_btn = gr.Button("🚀 开始对话", variant="primary", size="lg")
+            
+            login_error = gr.Markdown(visible=False, elem_classes="error-msg")
+        
+        # ========== 对话页面 ==========
+        with gr.Column(visible=False) as chat_page:
+            
+            # 顶部欢迎栏
+            with gr.Row(elem_classes="chat-header"):
+                welcome_msg = gr.Markdown("### 👋 欢迎！")
+                logout_btn = gr.Button("🚪 退出登录", size="sm", elem_classes="logout-btn")
+            
+            # 对话界面
+            chatbot = gr.Chatbot(
+                label="对话",
+                height=500,
+                show_copy_button=True,
+                avatar_images=(None, "https://em-content.zobj.net/source/apple/391/cherry-blossom_1f338.png")
+            )
+            
+            with gr.Row():
+                msg_input = gr.Textbox(
+                    label="消息",
+                    placeholder="和小虹说说你的心情吧...",
+                    max_lines=3,
+                    scale=9
+                )
+                send_btn = gr.Button("发送", variant="primary", scale=1)
+            
+            # 快捷操作
+            with gr.Row():
+                gr.Examples(
+                    examples=[
+                        "你好，我今天心情不太好",
+                        "最近工作压力很大，感觉很焦虑",
+                        "我升职了！想和你分享这个好消息",
+                        "有时候感觉很孤独",
+                    ],
+                    inputs=msg_input,
+                    label="💡 试试这些话题"
+                )
+            
+            with gr.Row():
+                clear_btn = gr.Button("🗑️ 清空对话")
+        
+        # ========== 事件绑定 ==========
+        
+        # 登录（禁用 API 避免 schema 问题）
+        login_btn.click(
+            fn=login,
+            inputs=[username_input, code_input],
+            outputs=[user_state, login_page, chat_page, login_error, login_error, welcome_msg],
+            api_name=False
+        )
+        
+        # 回车登录
+        code_input.submit(
+            fn=login,
+            inputs=[username_input, code_input],
+            outputs=[user_state, login_page, chat_page, login_error, login_error, welcome_msg],
+            api_name=False
+        )
+        
+        # 发送消息（流式）
+        def respond(message, history, user_state_str):
+            """处理消息并更新历史"""
+            if not message.strip():
+                return history, ""
+            
+            # 添加用户消息到历史
+            history = history + [[message, ""]]
+            
+            # 流式获取回复
+            for response in chat_stream(message, history, user_state_str):
+                history[-1][1] = response
+                yield history, ""
+        
+        msg_input.submit(
+            fn=respond,
+            inputs=[msg_input, chatbot, user_state],
+            outputs=[chatbot, msg_input],
+            api_name=False
+        )
+        
+        send_btn.click(
+            fn=respond,
+            inputs=[msg_input, chatbot, user_state],
+            outputs=[chatbot, msg_input],
+            api_name=False
+        )
+        
+        # 清空对话
+        clear_btn.click(
+            fn=lambda: [],
+            outputs=[chatbot],
+            api_name=False
+        )
+        
+        # 登出
+        logout_btn.click(
+            fn=logout,
+            inputs=[user_state],
+            outputs=[user_state, login_page, chat_page, chatbot],
+            api_name=False
+        )
     
     return demo
 
@@ -187,10 +425,13 @@ def create_ui(use_stream: bool = True):
 def main():
     """主函数"""
     logger.info("=" * 50)
-    logger.info("启动情感机器人...")
+    logger.info("启动情感机器人（多用户版）...")
     logger.info(f"环境: {config.env}")
     logger.info(f"LLM提供商: {config.llm_provider}")
+    logger.info(f"Agent模式: {config.agent_mode}")
     logger.info(f"数据库路径: {config.database_path}")
+    logger.info(f"日志路径: {config.log_path}")
+    logger.info(f"激活码已配置: {'是' if config.activation_code else '否（允许所有用户）'}")
     logger.info("=" * 50)
     
     # 创建UI

@@ -13,18 +13,26 @@ services:
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       # - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       
+      # Agent 模式
+      - AGENT_MODE=${AGENT_MODE:-single}
+      
+      # 激活码（必须配置，否则所有人都可以访问）
+      - ACTIVATION_CODE=${ACTIVATION_CODE}
+      
       # 服务配置
       - ENV=production
       - GRADIO_SERVER_PORT=7860
       - DATABASE_PATH=/app/data/emotional_bot.db
+      - LOG_PATH=/app/logs
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       # 持久化数据库
       - ./data:/app/data
+      # 持久化日志
+      - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860/')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-

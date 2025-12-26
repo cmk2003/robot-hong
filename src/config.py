@@ -138,9 +138,19 @@ class Config:
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO")
     )
     
+    # 日志路径
+    log_path: str = field(
+        default_factory=lambda: os.getenv("LOG_PATH", "./logs")
+    )
+    
     # Gradio配置
     gradio_server_port: int = field(
         default_factory=lambda: int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+    )
+    
+    # 激活码（用于用户验证）
+    activation_code: str = field(
+        default_factory=lambda: os.getenv("ACTIVATION_CODE", "")
     )
     
     # LLM提供商配置映射

@@ -4,6 +4,7 @@ from .memory import MemoryManager
 from .emotional_agent import EmotionalAgent
 from .tools import create_memory_tools, STATELESS_TOOLS
 from .graph import create_agent_graph, AgentState
+from .agent_pool import AgentPool, username_to_user_id
 
 __all__ = [
     "WorkingContext", 
@@ -12,5 +13,7 @@ __all__ = [
     "create_memory_tools",
     "STATELESS_TOOLS",
     "create_agent_graph",
-    "AgentState"
+    "AgentState",
+    "AgentPool",
+    "username_to_user_id"
 ]
